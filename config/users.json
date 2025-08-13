@@ -6,7 +6,7 @@
     {
       "github_user": "stefan-ffr",
       "local_user": "stefan",
-      "full_name": "Stefan Administrator",
+      "full_name": "Stefan Müller",
       "sudo_access": "full",
       "groups": ["sudo", "adm", "docker"],
       "_description": "Main administrator with full access"
@@ -15,10 +15,10 @@
   
   "hosts": [
     {
-      "hostname": "your-server.example.com",
-      "ip": "192.168.1.10",
-      "environment": "production",
-      "description": "⚠️ CHANGE THIS TO YOUR REAL SERVER IP AND HOSTNAME!"
+      "hostname": "docker1.test.babsy.ch",
+      "ip": "78.47.10.169",
+      "environment": "development",
+      "description": "Test-Server Docker"
     }
   ],
   
