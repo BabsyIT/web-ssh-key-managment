@@ -1,23 +1,24 @@
 {
-  "_comment": "SSH Key Management Configuration",
+  "_comment": "SSH Key Management Configuration - Update this file to manage your servers and users",
   "_docs": "https://github.com/stefan-ffr/web-ssh-key-managment/wiki",
   
   "users": [
     {
       "github_user": "stefan-ffr",
-      "local_user": "admin",
-      "full_name": "Administrator",
+      "local_user": "stefan",
+      "full_name": "Stefan Administrator",
       "sudo_access": "full",
-      "groups": ["sudo", "adm", "docker"]
+      "groups": ["sudo", "adm", "docker"],
+      "_description": "Main administrator with full access"
     }
   ],
   
   "hosts": [
     {
-      "hostname": "example-server.com",
+      "hostname": "your-server.example.com",
       "ip": "192.168.1.10",
       "environment": "production",
-      "description": "Main server - CHANGE THIS TO YOUR SERVER!"
+      "description": "⚠️ CHANGE THIS TO YOUR REAL SERVER IP AND HOSTNAME!"
     }
   ],
   
@@ -35,24 +36,60 @@
   },
   
   "_examples": {
-    "_limited_user": {
+    "_comment": "Copy these examples to the 'users' or 'hosts' arrays above",
+    
+    "_limited_user_example": {
       "github_user": "developer-username",
       "local_user": "dev",
       "full_name": "Developer Name",
       "sudo_access": "limited",
       "sudo_commands": [
         "/usr/bin/systemctl restart nginx",
+        "/usr/bin/systemctl reload apache2",
         "/usr/bin/docker ps",
         "/usr/bin/docker logs *"
       ],
       "groups": ["docker", "www-data"]
     },
-    "_readonly_user": {
+    
+    "_readonly_user_example": {
       "github_user": "readonly-username", 
       "local_user": "readonly",
       "full_name": "Read Only User",
       "sudo_access": "none",
       "groups": ["users"]
+    },
+    
+    "_contractor_example": {
+      "github_user": "contractor-john",
+      "local_user": "john",
+      "full_name": "John Contractor (Temporary)",
+      "sudo_access": "none",
+      "groups": ["users"],
+      "_expires": "2025-12-31"
+    },
+    
+    "_additional_server_example": {
+      "hostname": "app-server-02.example.com",
+      "ip": "192.168.1.20",
+      "environment": "production",
+      "description": "Application server"
+    },
+    
+    "_staging_server_example": {
+      "hostname": "staging.example.com", 
+      "ip": "192.168.1.100",
+      "environment": "staging",
+      "description": "Staging environment"
     }
+  },
+  
+  "_instructions": {
+    "step1": "Replace 'stefan-ffr' with your GitHub username",
+    "step2": "Update server IP from 192.168.1.10 to your real server",
+    "step3": "Update hostname from 'your-server.example.com' to your real hostname",
+    "step4": "Add more users by copying examples from '_examples' section",
+    "step5": "Set SSH_PRIVATE_KEY secret in GitHub repository settings",
+    "step6": "Run the workflow manually to test"
   }
 }
