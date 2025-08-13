@@ -144,7 +144,12 @@ jobs:
         
         echo "🔍 First user (base64): $(echo "$USERS" | head -1)"
         echo "🔍 First user (decoded): $(echo "$USERS" | head -1 | base64 -d)"
-        
+
+        # Initialize counters
+        SUCCESS_COUNT=0
+        TOTAL_COUNT=0
+        SYNC_LOG=""
+
         for user_data in $USERS; do
           USER=$(echo "$user_data" | base64 -d)
           GITHUB_USER=$(echo "$USER" | jq -r '.github_user')
