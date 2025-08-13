@@ -163,8 +163,9 @@ jobs:
         fi
         
         # Create sync report as GitHub Issue
-        ISSUE_BODY="## SSH Sync Report: ${{ matrix.host.hostname }}
-        
+        cat > /tmp/issue_body.md << 'EOF'
+## SSH Sync Report: ${{ matrix.host.hostname }}
+
 **Time:** $(date -Iseconds)
 **Host:** ${{ matrix.host.hostname }} (${{ matrix.host.ip }})
 **Results:** $SUCCESS_COUNT/$TOTAL_COUNT successful
@@ -175,7 +176,10 @@ $(echo -e "$SYNC_LOG")
 ### Environment:
 - Workflow: ${{ github.workflow }}
 - Run: ${{ github.run_number }}
-- Triggered by: ${{ github.actor }}"
+- Triggered by: ${{ github.actor }}
+EOF
+        
+        ISSUE_BODY=$(cat /tmp/issue_body.md)
         
         if command -v gh >/dev/null 2>&1; then
           gh issue create \
