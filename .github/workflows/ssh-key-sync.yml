@@ -91,42 +91,26 @@ jobs:
         
         echo "📊 Found $(echo "$USERS_CHECK" | jq length) users in config"
         
-        # Debug: Test SSH setup first
-        echo "🔐 Checking SSH setup..."
-        if [ ! -f ~/.ssh/id_rsa ]; then
-          echo "❌ ERROR: SSH private key not found at ~/.ssh/id_rsa"
-          echo "🔍 SSH directory contents:"
-          ls -la ~/.ssh/ || echo "~/.ssh directory does not exist"
+        # Extract users with detailed debugging
+        echo "🔄 Extracting user data..."
+        if ! USERS=$(jq -r '.users[] | @base64' "$USER_CONFIG" 2>&1); then
+          echo "❌ ERROR: Failed to extract users from config!"
+          echo "jq error: $USERS"
           exit 1
         fi
         
-        echo "✅ SSH private key found"
-        echo "🔍 SSH key permissions: $(stat -c '%a' ~/.ssh/id_rsa)"
-        
-        # Test basic SSH connectivity
-        echo "🔌 Testing SSH connection to ${{ matrix.host.ip }}..."
-        if ssh -o ConnectTimeout=10 -o StrictHostKeyChecking=no -o BatchMode=yes root@${{ matrix.host.ip }} "echo 'SSH test successful'" 2>/dev/null; then
-          echo "✅ SSH connection successful"
-        else
-          echo "❌ ERROR: SSH connection failed"
-          echo "🔍 Detailed SSH debug:"
-          ssh -v -o ConnectTimeout=10 -o StrictHostKeyChecking=no root@${{ matrix.host.ip }} "echo 'test'" 2>&1 | head -20
-          echo "❌ STOPPING: Cannot proceed without SSH access"
-          exit 1
-        fi
-        
-        USERS=$(jq -r '.users[] | @base64' "$USER_CONFIG")
-        SUCCESS_COUNT=0
-        TOTAL_COUNT=0
-        SYNC_LOG=""
+        echo "✅ User extraction successful"
+        echo "🔍 Extracted $(echo "$USERS" | wc -l) user entries"
         
         # Debug: Check if any users were extracted
         if [ -z "$USERS" ]; then
           echo "❌ ERROR: No users extracted from config!"
+          echo "🔍 USERS variable is empty"
           exit 1
         fi
         
-        echo "✅ Successfully extracted user data"
+        echo "🔍 First user (base64): $(echo "$USERS" | head -1)"
+        echo "🔍 First user (decoded): $(echo "$USERS" | head -1 | base64 -d)"
         
         for user_data in $USERS; do
           USER=$(echo "$user_data" | base64 -d)
@@ -168,10 +152,29 @@ jobs:
               
               if [[ "$KEY_COUNT" -gt 0 ]]; then
                 SSH_SCRIPT="
-                  # Create user if not exists
+                  # Create user if not exists (with OS detection)
                   if ! id '$LOCAL_USER' &>/dev/null; then
-                    useradd -m -s /bin/bash -c '$FULL_NAME' '$LOCAL_USER'
-                    echo '✅ Created user: $LOCAL_USER'
+                    echo 'Creating user: $LOCAL_USER'
+                    
+                    # Try different user creation methods based on OS
+                    if command -v useradd >/dev/null 2>&1; then
+                      # Standard Linux (Ubuntu, CentOS, etc.)
+                      useradd -m -s /bin/bash -c '$FULL_NAME' '$LOCAL_USER'
+                      echo '✅ Created user with useradd: $LOCAL_USER'
+                    elif command -v adduser >/dev/null 2>&1; then
+                      # Alpine Linux or some Debian systems
+                      adduser -D -s /bin/bash '$LOCAL_USER' 2>/dev/null || adduser --disabled-password --gecos '$FULL_NAME' '$LOCAL_USER'
+                      echo '✅ Created user with adduser: $LOCAL_USER'
+                    elif command -v pw >/dev/null 2>&1; then
+                      # FreeBSD
+                      pw useradd '$LOCAL_USER' -m -s /bin/bash -c '$FULL_NAME'
+                      echo '✅ Created user with pw: $LOCAL_USER'
+                    else
+                      echo '❌ ERROR: No user creation tool found (useradd, adduser, pw)'
+                      exit 1
+                    fi
+                  else
+                    echo '✅ User $LOCAL_USER already exists'
                   fi
                   
                   # Setup SSH directory
