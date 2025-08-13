@@ -62,9 +62,42 @@ jobs:
     - name: Setup SSH
       run: |
         mkdir -p ~/.ssh
-        echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
-        chmod 600 ~/.ssh/id_rsa
+        
+        # Detect key type and save with correct filename
+        echo "${{ secrets.SSH_PRIVATE_KEY }}" > /tmp/temp_key
+        
+        if grep -q "BEGIN OPENSSH PRIVATE KEY" /tmp/temp_key; then
+          # Modern OpenSSH format - detect actual key type
+          if ssh-keygen -l -f /tmp/temp_key 2>/dev/null | grep -q "ED25519"; then
+            echo "🔑 Detected Ed25519 key"
+            cp /tmp/temp_key ~/.ssh/id_ed25519
+            chmod 600 ~/.ssh/id_ed25519
+          elif ssh-keygen -l -f /tmp/temp_key 2>/dev/null | grep -q "RSA"; then
+            echo "🔑 Detected RSA key"
+            cp /tmp/temp_key ~/.ssh/id_rsa
+            chmod 600 ~/.ssh/id_rsa
+          else
+            echo "🔑 Unknown key type, trying as RSA"
+            cp /tmp/temp_key ~/.ssh/id_rsa
+            chmod 600 ~/.ssh/id_rsa
+          fi
+        elif grep -q "BEGIN RSA PRIVATE KEY" /tmp/temp_key; then
+          echo "🔑 Legacy RSA key format"
+          cp /tmp/temp_key ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+        else
+          echo "🔑 Unknown key format, trying as RSA"
+          cp /tmp/temp_key ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+        fi
+        
+        rm /tmp/temp_key
+        
+        # Add host to known_hosts
         ssh-keyscan -H ${{ matrix.host.ip }} >> ~/.ssh/known_hosts 2>/dev/null || true
+        
+        echo "🔍 Available SSH keys:"
+        ls -la ~/.ssh/id_* 2>/dev/null || echo "No SSH keys found"
     
     - name: Sync SSH keys to ${{ matrix.host.hostname }}
       run: |
