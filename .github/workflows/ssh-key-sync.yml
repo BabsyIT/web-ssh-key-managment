@@ -244,10 +244,27 @@ jobs:
         GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     
     - name: Upload dashboard to Pages
-      uses: actions/upload-pages-artifact@v2
+      uses: actions/upload-pages-artifact@v3
       with:
         path: dashboard/public
     
+    - name: Debug uploaded content
+      run: |
+        echo "📁 Contents being uploaded to GitHub Pages:"
+        find dashboard/public -type f -name "*.html" -o -name "*.json" | head -20
+        echo ""
+        echo "📄 Checking if index.html exists:"
+        if [ -f "dashboard/public/index.html" ]; then
+          echo "✅ index.html found!"
+          echo "📏 File size: $(stat -c%s dashboard/public/index.html) bytes"
+          echo "🔍 First 200 characters:"
+          head -c 200 dashboard/public/index.html
+        else
+          echo "❌ index.html NOT found!"
+          echo "📂 Available files in dashboard/public/:"
+          ls -la dashboard/public/
+        fi
+    
     - name: Deploy to GitHub Pages
       id: deployment
-      uses: actions/deploy-pages@v2
+      uses: actions/deploy-pages@v4
