@@ -163,27 +163,12 @@ jobs:
         fi
         
         # Create sync report as GitHub Issue
-        cat > /tmp/issue_body.md << 'EOF'
-## SSH Sync Report: ${{ matrix.host.hostname }}
-
-**Time:** $(date -Iseconds)
-**Host:** ${{ matrix.host.hostname }} (${{ matrix.host.ip }})
-**Results:** $SUCCESS_COUNT/$TOTAL_COUNT successful
-
-### Details:
-$(echo -e "$SYNC_LOG")
-
-### Environment:
-- Workflow: ${{ github.workflow }}
-- Run: ${{ github.run_number }}
-- Triggered by: ${{ github.actor }}
-EOF
-        
-        ISSUE_BODY=$(cat /tmp/issue_body.md)
-        
         if command -v gh >/dev/null 2>&1; then
+          ISSUE_TITLE="SSH Sync: ${{ matrix.host.hostname }} - $(date '+%Y-%m-%d %H:%M')"
+          ISSUE_BODY="SSH Sync Report for ${{ matrix.host.hostname }} at $(date -Iseconds). Results: $SUCCESS_COUNT/$TOTAL_COUNT successful. Host: ${{ matrix.host.ip }}. Workflow: ${{ github.workflow }} Run: ${{ github.run_number }} by ${{ github.actor }}."
+          
           gh issue create \
-            --title "SSH Sync: ${{ matrix.host.hostname }} - $(date '+%Y-%m-%d %H:%M')" \
+            --title "$ISSUE_TITLE" \
             --body "$ISSUE_BODY" \
             --label "sync-report,automated,${{ matrix.host.hostname }}" || echo "Failed to create issue"
         fi
