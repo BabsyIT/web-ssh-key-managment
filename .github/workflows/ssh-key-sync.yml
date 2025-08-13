@@ -197,6 +197,9 @@ jobs:
         # Create API directory
         mkdir -p dashboard/public/api
         
+        # Disable Jekyll processing
+        touch dashboard/public/.nojekyll
+        
         # Generate stats
         TOTAL_HOSTS=$(jq '.hosts | length' config/users.json)
         TOTAL_USERS=$(jq '.users | length' config/users.json)
