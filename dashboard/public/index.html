@@ -1,0 +1,234 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SSH Key Management Dashboard</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🔐</text></svg>">
+</head>
+<body class="bg-gray-50">
+    <div class="min-h-screen">
+        <!-- Header -->
+        <header class="bg-white shadow-sm border-b">
+            <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+                <div class="flex justify-between items-center py-4">
+                    <div class="flex items-center space-x-3">
+                        <span class="text-2xl">🔐</span>
+                        <h1 class="text-xl font-semibold text-gray-900">SSH Key Management</h1>
+                        <span class="px-2 py-1 text-xs bg-green-100 text-green-800 rounded-full">GitHub Native</span>
+                    </div>
+                    <div class="flex items-center space-x-4">
+                        <div id="last-update" class="text-sm text-gray-600"></div>
+                        <div id="connection-status" class="flex items-center space-x-2">
+                            <div class="w-2 h-2 bg-green-400 rounded-full"></div>
+                            <span class="text-sm text-gray-600">Live</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </header>
+
+        <!-- Main Content -->
+        <main class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+            <!-- Stats Grid -->
+            <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
+                <div class="bg-white rounded-lg shadow p-6">
+                    <div class="flex items-center justify-between">
+                        <div>
+                            <p class="text-sm font-medium text-gray-600">Total Hosts</p>
+                            <p id="total-hosts" class="text-2xl font-bold text-blue-600">-</p>
+                        </div>
+                        <div class="p-3 bg-blue-100 rounded-full">
+                            <span class="text-blue-600 text-xl">🖥️</span>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="bg-white rounded-lg shadow p-6">
+                    <div class="flex items-center justify-between">
+                        <div>
+                            <p class="text-sm font-medium text-gray-600">Total Users</p>
+                            <p id="total-users" class="text-2xl font-bold text-green-600">-</p>
+                        </div>
+                        <div class="p-3 bg-green-100 rounded-full">
+                            <span class="text-green-600 text-xl">👥</span>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="bg-white rounded-lg shadow p-6">
+                    <div class="flex items-center justify-between">
+                        <div>
+                            <p class="text-sm font-medium text-gray-600">Success Rate</p>
+                            <p id="success-rate" class="text-2xl font-bold text-purple-600">-</p>
+                        </div>
+                        <div class="p-3 bg-purple-100 rounded-full">
+                            <span class="text-purple-600 text-xl">📊</span>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="bg-white rounded-lg shadow p-6">
+                    <div class="flex items-center justify-between">
+                        <div>
+                            <p class="text-sm font-medium text-gray-600">Online Hosts</p>
+                            <p id="online-hosts" class="text-2xl font-bold text-orange-600">-</p>
+                        </div>
+                        <div class="p-3 bg-orange-100 rounded-full">
+                            <span class="text-orange-600 text-xl">⚡</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Content Grid -->
+            <div class="grid grid-cols-1 lg:grid-cols-3 gap-8">
+                <!-- Hosts -->
+                <div class="lg:col-span-2 bg-white rounded-lg shadow">
+                    <div class="px-6 py-4 border-b">
+                        <h2 class="text-lg font-semibold">Managed Hosts</h2>
+                    </div>
+                    <div class="p-6">
+                        <div id="hosts-list" class="space-y-4"></div>
+                    </div>
+                </div>
+
+                <!-- Recent Activity -->
+                <div class="bg-white rounded-lg shadow">
+                    <div class="px-6 py-4 border-b">
+                        <h2 class="text-lg font-semibold">Recent Sync Reports</h2>
+                    </div>
+                    <div class="p-6">
+                        <div id="sync-reports" class="space-y-3"></div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Users -->
+            <div class="mt-8 bg-white rounded-lg shadow">
+                <div class="px-6 py-4 border-b">
+                    <h2 class="text-lg font-semibold">Managed Users</h2>
+                </div>
+                <div class="p-6">
+                    <div id="users-grid" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4"></div>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <script>
+        // Dashboard Logic
+        async function loadDashboard() {
+            try {
+                const [stats, hosts, users, reports] = await Promise.all([
+                    fetch('./api/stats.json').then(r => r.json()).catch(() => ({})),
+                    fetch('./api/hosts.json').then(r => r.json()).catch(() => []),
+                    fetch('./api/users.json').then(r => r.json()).catch(() => []),
+                    fetch('./api/sync-reports.json').then(r => r.json()).catch(() => [])
+                ]);
+
+                // Update stats
+                document.getElementById('total-hosts').textContent = stats.total_hosts || hosts.length || 0;
+                document.getElementById('total-users').textContent = stats.total_users || users.length || 0;
+                document.getElementById('success-rate').textContent = (stats.success_rate || 0) + '%';
+                document.getElementById('online-hosts').textContent = stats.online_hosts || hosts.length || 0;
+
+                // Update last update time
+                if (stats.last_update) {
+                    document.getElementById('last-update').textContent = 
+                        'Updated: ' + new Date(stats.last_update).toLocaleTimeString();
+                }
+
+                // Render hosts
+                const hostsList = document.getElementById('hosts-list');
+                if (hosts.length > 0) {
+                    hostsList.innerHTML = hosts.map(host => `
+                        <div class="flex items-center justify-between p-4 border rounded-lg">
+                            <div>
+                                <h3 class="font-medium">${host.hostname}</h3>
+                                <p class="text-sm text-gray-600">${host.ip} • ${host.environment || 'production'}</p>
+                                ${host.description ? `<p class="text-xs text-gray-500">${host.description}</p>` : ''}
+                            </div>
+                            <div class="flex items-center space-x-2">
+                                <span class="w-2 h-2 bg-green-400 rounded-full"></span>
+                                <span class="text-sm text-green-600">Online</span>
+                            </div>
+                        </div>
+                    `).join('');
+                } else {
+                    hostsList.innerHTML = '<p class="text-gray-500 text-center py-8">No hosts configured yet</p>';
+                }
+
+                // Render users
+                const usersGrid = document.getElementById('users-grid');
+                if (users.length > 0) {
+                    usersGrid.innerHTML = users.map(user => {
+                        const sudoBadgeColor = {
+                            'full': 'bg-red-100 text-red-800',
+                            'limited': 'bg-yellow-100 text-yellow-800',
+                            'none': 'bg-green-100 text-green-800'
+                        }[user.sudo_access] || 'bg-gray-100 text-gray-800';
+
+                        return `
+                            <div class="border rounded-lg p-4">
+                                <div class="flex justify-between items-start mb-2">
+                                    <div>
+                                        <h3 class="font-medium">${user.full_name || user.local_user}</h3>
+                                        <p class="text-sm text-gray-600">@${user.github_user} → ${user.local_user}</p>
+                                    </div>
+                                    <span class="px-2 py-1 text-xs rounded-full ${sudoBadgeColor}">
+                                        ${(user.sudo_access || 'none').toUpperCase()}
+                                    </span>
+                                </div>
+                                ${user.groups && user.groups.length > 0 ? `
+                                    <div class="flex flex-wrap gap-1 mt-2">
+                                        ${user.groups.map(group => 
+                                            `<span class="px-2 py-1 text-xs bg-gray-100 rounded">${group}</span>`
+                                        ).join('')}
+                                    </div>
+                                ` : ''}
+                            </div>
+                        `;
+                    }).join('');
+                } else {
+                    usersGrid.innerHTML = '<p class="text-gray-500 text-center py-8 col-span-full">No users configured yet</p>';
+                }
+
+                // Render sync reports
+                const reportsDiv = document.getElementById('sync-reports');
+                if (reports.length > 0) {
+                    reportsDiv.innerHTML = reports.slice(0, 5).map(report => {
+                        const date = new Date(report.date);
+                        const status = report.success ? '✅' : '❌';
+                        return `
+                            <div class="flex items-center justify-between p-3 border rounded">
+                                <div>
+                                    <p class="text-sm font-medium">${status} ${report.hostname || 'Unknown Host'}</p>
+                                    <p class="text-xs text-gray-600">${date.toLocaleString()}</p>
+                                </div>
+                            </div>
+                        `;
+                    }).join('');
+                } else {
+                    reportsDiv.innerHTML = '<p class="text-gray-500 text-center py-8">No sync reports yet</p>';
+                }
+
+            } catch (error) {
+                console.error('Error loading dashboard:', error);
+                document.getElementById('connection-status').innerHTML = `
+                    <div class="w-2 h-2 bg-red-400 rounded-full"></div>
+                    <span class="text-sm text-red-600">Error</span>
+                `;
+            }
+        }
+
+        // Load dashboard on page load
+        loadDashboard();
+
+        // Auto-refresh every 30 seconds
+        setInterval(loadDashboard, 30000);
+    </script>
+</body>
+</html>

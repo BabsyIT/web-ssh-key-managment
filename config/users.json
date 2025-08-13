@@ -1,0 +1,58 @@
+{
+  "_comment": "SSH Key Management Configuration",
+  "_docs": "https://github.com/stefan-ffr/web-ssh-key-managment/wiki",
+  
+  "users": [
+    {
+      "github_user": "stefan-ffr",
+      "local_user": "admin",
+      "full_name": "Administrator",
+      "sudo_access": "full",
+      "groups": ["sudo", "adm", "docker"]
+    }
+  ],
+  
+  "hosts": [
+    {
+      "hostname": "example-server.com",
+      "ip": "192.168.1.10",
+      "environment": "production",
+      "description": "Main server - CHANGE THIS TO YOUR SERVER!"
+    }
+  ],
+  
+  "settings": {
+    "sync_interval": "*/5 * * * *",
+    "notifications": {
+      "github_issues": true,
+      "slack_webhook": false
+    },
+    "security": {
+      "require_ssh_keys": true,
+      "auto_create_users": true,
+      "backup_enabled": true
+    }
+  },
+  
+  "_examples": {
+    "_limited_user": {
+      "github_user": "developer-username",
+      "local_user": "dev",
+      "full_name": "Developer Name",
+      "sudo_access": "limited",
+      "sudo_commands": [
+        "/usr/bin/systemctl restart nginx",
+        "/usr/bin/docker ps",
+        "/usr/bin/docker logs *"
+      ],
+      "groups": ["docker", "www-data"]
+    },
+    "_readonly_user": {
+      "github_user": "readonly-username", 
+      "local_user": "readonly",
+      "full_name": "Read Only User",
+      "sudo_access": "none",
+      "groups": ["users"]
+    }
+  }
+}
