@@ -150,6 +150,8 @@ jobs:
         TOTAL_COUNT=0
         SYNC_LOG=""
 
+        echo "🚀🚀🚀 NEW CODE RUNNING - VARIABLES INITIALIZED 🚀🚀🚀"
+
         for user_data in $USERS; do
           USER=$(echo "$user_data" | base64 -d)
           GITHUB_USER=$(echo "$USER" | jq -r '.github_user')
