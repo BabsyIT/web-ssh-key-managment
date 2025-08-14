@@ -98,20 +98,19 @@ jobs:
 
     - name: Sync SSH keys to ${{ matrix.host.hostname }}
       run: |
-        echo "🔄 Starting SSH key sync for ${{ matrix.host.hostname }}"
+        echo "Starting SSH key sync for ${{ matrix.host.hostname }}"
         
         SUCCESS_COUNT=0
         TOTAL_COUNT=0
-        SYNC_LOG=""
         
         if [ ! -f "$USER_CONFIG" ]; then
-          echo "❌ ERROR: Config file not found"
+          echo "ERROR: Config file not found"
           exit 1
         fi
         
         USERS=$(jq -r '.users[] | @base64' "$USER_CONFIG" 2>/dev/null || echo "")
         if [ -z "$USERS" ]; then
-          echo "❌ ERROR: No users found"
+          echo "ERROR: No users found"
           exit 1
         fi
         
@@ -124,115 +123,81 @@ jobs:
           GROUPS=$(echo "$USER" | jq -r '.groups[]?' | tr '\n' ',' | sed 's/,$//')
           
           TOTAL_COUNT=$((TOTAL_COUNT + 1))
-          echo "👤 Processing: $LOCAL_USER ← $GITHUB_USER"
+          echo "Processing: $LOCAL_USER from $GITHUB_USER"
           
           if [ -z "$GITHUB_USER" ] || [ "$GITHUB_USER" = "null" ]; then
-            echo "❌ Invalid github_user"
+            echo "Invalid github_user"
             continue
           fi
           
           if [ -z "$LOCAL_USER" ] || [ "$LOCAL_USER" = "null" ]; then
-            echo "❌ Invalid local_user"
+            echo "Invalid local_user"
             continue
           fi
           
-          echo "🔌 Testing SSH connection..."
-          if ! ssh -o ConnectTimeout=10 -o StrictHostKeyChecking=no -o BatchMode=yes root@${{ matrix.host.ip }} "echo 'SSH OK'" 2>/dev/null; then
-            echo "❌ Cannot connect to host"
+          echo "Testing SSH connection..."
+          if ! ssh -o ConnectTimeout=10 -o StrictHostKeyChecking=no -o BatchMode=yes root@${{ matrix.host.ip }} "echo 'OK'" 2>/dev/null; then
+            echo "Cannot connect to host"
             continue
           fi
           
-          echo "📥 Fetching SSH keys for $GITHUB_USER..."
           KEYS=$(curl -s --max-time 10 "https://github.com/${GITHUB_USER}.keys")
           if [[ -z "$KEYS" || "$KEYS" == *"Not Found"* ]]; then
-            echo "⚠️ No SSH keys for $GITHUB_USER"
+            echo "No SSH keys for $GITHUB_USER"
             continue
           fi
           
           KEY_COUNT=$(echo "$KEYS" | grep -c "^ssh-" || echo "0")
           if [[ "$KEY_COUNT" -eq 0 ]]; then
-            echo "⚠️ No valid SSH keys"
+            echo "No valid SSH keys"
             continue
           fi
           
-          echo "🔑 Found $KEY_COUNT SSH keys, syncing..."
+          echo "Found $KEY_COUNT SSH keys, syncing..."
           
-          # Create the remote script
-          cat > /tmp/sync_script.sh << 'SCRIPT_EOF'
-if ! id "${LOCAL_USER}" &>/dev/null; then
-  echo "Creating user: ${LOCAL_USER}"
-  if command -v useradd >/dev/null; then
-    useradd -m -s /bin/bash -c "${FULL_NAME}" "${LOCAL_USER}"
-    echo "✅ Created user with useradd"
-  elif command -v adduser >/dev/null; then
-    adduser --disabled-password --gecos "${FULL_NAME}" "${LOCAL_USER}"
-    echo "✅ Created user with adduser"
-  else
-    echo "❌ No user creation tool found"
-    exit 1
-  fi
-else
-  echo "✅ User ${LOCAL_USER} already exists"
-fi
-
-echo "Setting up SSH directory..."
-mkdir -p "/home/${LOCAL_USER}/.ssh"
-echo "${KEYS}" > "/home/${LOCAL_USER}/.ssh/authorized_keys"
-chmod 700 "/home/${LOCAL_USER}/.ssh"
-chmod 600 "/home/${LOCAL_USER}/.ssh/authorized_keys"
-chown -R "${LOCAL_USER}:${LOCAL_USER}" "/home/${LOCAL_USER}/.ssh"
-
-if [[ -n "${GROUPS}" ]]; then
-  echo "Adding to groups: ${GROUPS}"
-  IFS=',' read -ra GROUP_ARRAY <<< "${GROUPS}"
-  for group in "${GROUP_ARRAY[@]}"; do
-    if getent group "$group" >/dev/null; then
-      usermod -a -G "$group" "${LOCAL_USER}"
-      echo "Added ${LOCAL_USER} to group: $group"
-    fi
-  done
-fi
-
-echo "Configuring sudo access: ${SUDO_ACCESS}"
-case "${SUDO_ACCESS}" in
-  'full')
-    echo "${LOCAL_USER} ALL=(ALL:ALL) NOPASSWD:ALL" > "/etc/sudoers.d/github-${LOCAL_USER}"
-    chmod 440 "/etc/sudoers.d/github-${LOCAL_USER}"
-    echo "✅ Granted full sudo access"
-    ;;
-  'none')
-    rm -f "/etc/sudoers.d/github-${LOCAL_USER}"
-    echo "✅ No sudo access"
-    ;;
-esac
-
-echo "✅ User sync completed successfully"
-SCRIPT_EOF
+          # Simple SSH commands instead of complex script
+          ssh -o ConnectTimeout=10 -o StrictHostKeyChecking=no root@${{ matrix.host.ip }} "
+            if ! id $LOCAL_USER &>/dev/null; then
+              useradd -m -s /bin/bash -c '$FULL_NAME' $LOCAL_USER || adduser --disabled-password --gecos '$FULL_NAME' $LOCAL_USER
+            fi
+            mkdir -p /home/$LOCAL_USER/.ssh
+            chmod 700 /home/$LOCAL_USER/.ssh
+            chown $LOCAL_USER:$LOCAL_USER /home/$LOCAL_USER/.ssh
+          "
           
-          # Execute the script with variable substitution
-          if ssh -o ConnectTimeout=10 -o StrictHostKeyChecking=no root@${{ matrix.host.ip }} \
-            "LOCAL_USER='$LOCAL_USER' FULL_NAME='$FULL_NAME' KEYS='$KEYS' GROUPS='$GROUPS' SUDO_ACCESS='$SUDO_ACCESS' bash -s" < /tmp/sync_script.sh; then
-            SUCCESS_COUNT=$((SUCCESS_COUNT + 1))
-            echo "✅ Successfully synced $LOCAL_USER ($KEY_COUNT keys)"
-            SYNC_LOG="${SYNC_LOG}✅ $LOCAL_USER: $KEY_COUNT keys synced\n"
-          else
-            echo "❌ Failed to sync $LOCAL_USER"
-            SYNC_LOG="${SYNC_LOG}❌ $LOCAL_USER: Sync failed\n"
+          # Send SSH keys
+          echo "$KEYS" | ssh -o ConnectTimeout=10 -o StrictHostKeyChecking=no root@${{ matrix.host.ip }} "
+            cat > /home/$LOCAL_USER/.ssh/authorized_keys
+            chmod 600 /home/$LOCAL_USER/.ssh/authorized_keys
+            chown $LOCAL_USER:$LOCAL_USER /home/$LOCAL_USER/.ssh/authorized_keys
+          "
+          
+          # Set groups and sudo
+          if [[ -n "$GROUPS" ]]; then
+            ssh -o ConnectTimeout=10 -o StrictHostKeyChecking=no root@${{ matrix.host.ip }} "
+              IFS=',' read -ra G <<< '$GROUPS'
+              for group in \${G[@]}; do
+                if getent group \$group >/dev/null; then
+                  usermod -a -G \$group $LOCAL_USER
+                fi
+              done
+            "
           fi
           
-          rm -f /tmp/sync_script.sh
+          if [[ "$SUDO_ACCESS" == "full" ]]; then
+            ssh -o ConnectTimeout=10 -o StrictHostKeyChecking=no root@${{ matrix.host.ip }} "
+              echo '$LOCAL_USER ALL=(ALL:ALL) NOPASSWD:ALL' > /etc/sudoers.d/github-$LOCAL_USER
+              chmod 440 /etc/sudoers.d/github-$LOCAL_USER
+            "
+          fi
+          
+          SUCCESS_COUNT=$((SUCCESS_COUNT + 1))
+          echo "Successfully synced $LOCAL_USER ($KEY_COUNT keys)"
         done
         
-        echo ""
-        echo "📊 Sync Results for ${{ matrix.host.hostname }}:"
-        echo -e "$SYNC_LOG"
-        echo "Total users: $TOTAL_COUNT"
-        echo "Successful: $SUCCESS_COUNT"
+        echo "Results: $SUCCESS_COUNT/$TOTAL_COUNT successful"
         
-        if [[ $TOTAL_COUNT -gt 0 && $SUCCESS_COUNT -gt 0 ]]; then
-          echo "✅ Workflow completed successfully"
-        else
-          echo "❌ Workflow failed: No users processed or all failed"
+        if [[ $TOTAL_COUNT -eq 0 || $SUCCESS_COUNT -eq 0 ]]; then
           exit 1
         fi
       env:
