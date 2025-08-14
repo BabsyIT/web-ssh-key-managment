@@ -136,7 +136,7 @@ jobs:
           fi
           
           echo "Testing SSH connection..."
-          if ! ssh -o ConnectTimeout=10 -o StrictHostKeyChecking=no -o BatchMode=yes root@${{ matrix.host.ip }} "echo 'OK'" 2>/dev/null; then
+          if ! ssh -o ConnectTimeout=10 -o StrictHostKeyChecking=no -o BatchMode=yes root@${{ matrix.host.ip }} "echo OK" 2>/dev/null; then
             echo "Cannot connect to host"
             continue
           fi
@@ -155,40 +155,22 @@ jobs:
           
           echo "Found $KEY_COUNT SSH keys, syncing..."
           
-          # Simple SSH commands instead of complex script
-          ssh -o ConnectTimeout=10 -o StrictHostKeyChecking=no root@${{ matrix.host.ip }} "
-            if ! id $LOCAL_USER &>/dev/null; then
-              useradd -m -s /bin/bash -c '$FULL_NAME' $LOCAL_USER || adduser --disabled-password --gecos '$FULL_NAME' $LOCAL_USER
-            fi
-            mkdir -p /home/$LOCAL_USER/.ssh
-            chmod 700 /home/$LOCAL_USER/.ssh
-            chown $LOCAL_USER:$LOCAL_USER /home/$LOCAL_USER/.ssh
-          "
+          # Create user
+          ssh -o ConnectTimeout=10 -o StrictHostKeyChecking=no root@${{ matrix.host.ip }} "id $LOCAL_USER || useradd -m -s /bin/bash $LOCAL_USER"
           
-          # Send SSH keys
-          echo "$KEYS" | ssh -o ConnectTimeout=10 -o StrictHostKeyChecking=no root@${{ matrix.host.ip }} "
-            cat > /home/$LOCAL_USER/.ssh/authorized_keys
-            chmod 600 /home/$LOCAL_USER/.ssh/authorized_keys
-            chown $LOCAL_USER:$LOCAL_USER /home/$LOCAL_USER/.ssh/authorized_keys
-          "
+          # Setup SSH directory
+          ssh -o ConnectTimeout=10 -o StrictHostKeyChecking=no root@${{ matrix.host.ip }} "mkdir -p /home/$LOCAL_USER/.ssh && chmod 700 /home/$LOCAL_USER/.ssh"
           
-          # Set groups and sudo
-          if [[ -n "$GROUPS" ]]; then
-            ssh -o ConnectTimeout=10 -o StrictHostKeyChecking=no root@${{ matrix.host.ip }} "
-              IFS=',' read -ra G <<< '$GROUPS'
-              for group in \${G[@]}; do
-                if getent group \$group >/dev/null; then
-                  usermod -a -G \$group $LOCAL_USER
-                fi
-              done
-            "
-          fi
+          # Install SSH keys
+          echo "$KEYS" | ssh -o ConnectTimeout=10 -o StrictHostKeyChecking=no root@${{ matrix.host.ip }} "cat > /home/$LOCAL_USER/.ssh/authorized_keys"
           
+          # Set permissions
+          ssh -o ConnectTimeout=10 -o StrictHostKeyChecking=no root@${{ matrix.host.ip }} "chmod 600 /home/$LOCAL_USER/.ssh/authorized_keys && chown -R $LOCAL_USER:$LOCAL_USER /home/$LOCAL_USER/.ssh"
+          
+          # Add to sudo group if needed
           if [[ "$SUDO_ACCESS" == "full" ]]; then
-            ssh -o ConnectTimeout=10 -o StrictHostKeyChecking=no root@${{ matrix.host.ip }} "
-              echo '$LOCAL_USER ALL=(ALL:ALL) NOPASSWD:ALL' > /etc/sudoers.d/github-$LOCAL_USER
-              chmod 440 /etc/sudoers.d/github-$LOCAL_USER
-            "
+            ssh -o ConnectTimeout=10 -o StrictHostKeyChecking=no root@${{ matrix.host.ip }} "usermod -a -G sudo $LOCAL_USER"
+            ssh -o ConnectTimeout=10 -o StrictHostKeyChecking=no root@${{ matrix.host.ip }} "echo '$LOCAL_USER ALL=(ALL:ALL) NOPASSWD:ALL' > /etc/sudoers.d/$LOCAL_USER"
           fi
           
           SUCCESS_COUNT=$((SUCCESS_COUNT + 1))
