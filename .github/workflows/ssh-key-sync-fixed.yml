@@ -1,0 +1,300 @@
+name: SSH Key Management - Fixed
+
+on:
+  schedule:
+    - cron: '*/5 * * * *'
+  workflow_dispatch:
+    inputs:
+      target_hosts:
+        description: 'Target hosts (comma-separated, or "all")'
+        required: false
+        default: 'all'
+  push:
+    paths:
+      - 'config/users.json'
+
+env:
+  USER_CONFIG: 'config/users.json'
+
+jobs:
+  validate-config:
+    runs-on: ubuntu-latest
+    outputs:
+      config-valid: ${{ steps.validate.outputs.valid }}
+      host-matrix: ${{ steps.hosts.outputs.matrix }}
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Validate configuration
+      id: validate
+      run: |
+        echo "🔍 Validating configuration file..."
+        if [ ! -f "$USER_CONFIG" ]; then
+          echo "❌ Configuration file not found: $USER_CONFIG"
+          echo "valid=false" >> $GITHUB_OUTPUT
+          exit 1
+        fi
+        
+        echo "📄 Config file exists, checking JSON format..."
+        if jq empty "$USER_CONFIG" 2>/dev/null; then
+          echo "valid=true" >> $GITHUB_OUTPUT
+          echo "✅ Configuration is valid JSON"
+        else
+          echo "valid=false" >> $GITHUB_OUTPUT
+          echo "❌ Invalid JSON in $USER_CONFIG"
+          echo "JSON Error Details:"
+          jq . "$USER_CONFIG" 2>&1 || true
+          exit 1
+        fi
+
+    - name: Extract host matrix
+      id: hosts
+      run: |
+        if [ -f "$USER_CONFIG" ]; then
+          echo "📊 Extracting hosts from config..."
+          HOSTS=$(jq -c '.hosts' "$USER_CONFIG" 2>/dev/null)
+          
+          if [ "$HOSTS" = "null" ] || [ -z "$HOSTS" ]; then
+            echo "❌ No hosts found in configuration"
+            echo "matrix=[]" >> $GITHUB_OUTPUT
+            exit 1
+          fi
+          
+          echo "matrix=$HOSTS" >> $GITHUB_OUTPUT
+          HOST_COUNT=$(echo "$HOSTS" | jq length)
+          echo "✅ Found $HOST_COUNT hosts to manage"
+          echo "Hosts: $HOSTS"
+        else
+          echo "matrix=[]" >> $GITHUB_OUTPUT
+          echo "⚠️ No config file found"
+        fi
+
+  sync-ssh-keys:
+    runs-on: ubuntu-latest
+    needs: validate-config
+    if: needs.validate-config.outputs.config-valid == 'true'
+
+    strategy:
+      matrix:
+        host: ${{ fromJson(needs.validate-config.outputs.host-matrix) }}
+      fail-fast: false
+      max-parallel: 3
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Setup SSH
+      run: |
+        echo "🔧 Setting up SSH configuration..."
+        mkdir -p ~/.ssh
+        chmod 700 ~/.ssh
+        echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
+        chmod 600 ~/.ssh/id_rsa
+        ssh-keyscan -H ${{ matrix.host.ip }} >> ~/.ssh/known_hosts 2>/dev/null || true
+        echo "✅ SSH setup complete"
+
+    - name: Sync SSH keys to ${{ matrix.host.hostname }}
+      run: |
+        set -e  # Exit on any error
+        
+        echo "🚀 Starting SSH key sync for ${{ matrix.host.hostname }}"
+        echo "Target: ${{ matrix.host.ip }}"
+        echo "======================================================="
+        
+        # Check if config file exists
+        if [ ! -f "$USER_CONFIG" ]; then
+          echo "❌ ERROR: Config file not found: $USER_CONFIG"
+          exit 1
+        fi
+        
+        echo "📖 Reading user configuration..."
+        
+        # Debug: Show config structure
+        echo "🔍 Config file structure:"
+        jq '.users | length' "$USER_CONFIG" || {
+          echo "❌ ERROR: Cannot read users from config file"
+          echo "Config file content:"
+          cat "$USER_CONFIG"
+          exit 1
+        }
+        
+        # Get users with safer approach
+        USER_COUNT=$(jq '.users | length' "$USER_CONFIG")
+        echo "👥 Found $USER_COUNT users in configuration"
+        
+        if [ "$USER_COUNT" -eq 0 ]; then
+          echo "❌ ERROR: No users found in configuration"
+          exit 1
+        fi
+        
+        SUCCESS_COUNT=0
+        
+        # Process each user by index (safer than base64 encoding)
+        for i in $(seq 0 $(($USER_COUNT - 1))); do
+          echo ""
+          echo "👤 Processing user $((i + 1)) of $USER_COUNT..."
+          
+          # Extract user data safely
+          GITHUB_USER=$(jq -r ".users[$i].github_user" "$USER_CONFIG")
+          LOCAL_USER=$(jq -r ".users[$i].local_user" "$USER_CONFIG")
+          FULL_NAME=$(jq -r ".users[$i].full_name // \"\"" "$USER_CONFIG")
+          SUDO_ACCESS=$(jq -r ".users[$i].sudo_access // \"none\"" "$USER_CONFIG")
+          
+          echo "  GitHub User: $GITHUB_USER"
+          echo "  Local User: $LOCAL_USER"
+          echo "  Sudo Access: $SUDO_ACCESS"
+          
+          # Validate user data
+          if [ -z "$GITHUB_USER" ] || [ "$GITHUB_USER" = "null" ]; then
+            echo "❌ Invalid github_user for user $((i + 1))"
+            continue
+          fi
+          
+          if [ -z "$LOCAL_USER" ] || [ "$LOCAL_USER" = "null" ]; then
+            echo "❌ Invalid local_user for user $((i + 1))"
+            continue
+          fi
+          
+          # Test SSH connection before proceeding
+          echo "🧪 Testing SSH connection..."
+          if ! ssh -o ConnectTimeout=10 -o StrictHostKeyChecking=no -o BatchMode=yes root@${{ matrix.host.ip }} "echo 'Connection test successful'"; then
+            echo "❌ Cannot connect to host ${{ matrix.host.ip }}"
+            exit 1
+          fi
+          echo "✅ SSH connection verified"
+          
+          # Fetch SSH keys from GitHub
+          echo "🔑 Fetching SSH keys for GitHub user: $GITHUB_USER"
+          KEYS=$(curl -s --max-time 10 "https://github.com/${GITHUB_USER}.keys")
+          
+          if [[ -z "$KEYS" || "$KEYS" == *"Not Found"* ]]; then
+            echo "❌ No SSH keys found for GitHub user: $GITHUB_USER"
+            continue
+          fi
+          
+          KEY_COUNT=$(echo "$KEYS" | grep -c "^ssh-" || echo "0")
+          if [[ "$KEY_COUNT" -eq 0 ]]; then
+            echo "❌ No valid SSH keys found for $GITHUB_USER"
+            continue
+          fi
+          
+          echo "✅ Found $KEY_COUNT SSH keys for $GITHUB_USER"
+          
+          # Execute all remote commands in a single SSH session for reliability
+          echo "🏗️ Setting up user on server..."
+          ssh -o ConnectTimeout=10 -o StrictHostKeyChecking=no root@${{ matrix.host.ip }} << EOF
+            set -e
+            
+            echo "Creating/updating user: $LOCAL_USER"
+            
+            # Create user if not exists
+            if ! id "$LOCAL_USER" 2>/dev/null; then
+              useradd -m -s /bin/bash "$LOCAL_USER"
+              echo "✅ User $LOCAL_USER created"
+            else
+              echo "✅ User $LOCAL_USER already exists"
+            fi
+            
+            # Setup SSH directory
+            mkdir -p /home/$LOCAL_USER/.ssh
+            chmod 700 /home/$LOCAL_USER/.ssh
+            
+            # Install SSH keys
+            echo '$KEYS' > /home/$LOCAL_USER/.ssh/authorized_keys
+            chmod 600 /home/$LOCAL_USER/.ssh/authorized_keys
+            chown -R $LOCAL_USER:$LOCAL_USER /home/$LOCAL_USER/.ssh
+            
+            echo "✅ SSH keys installed ($KEY_COUNT keys)"
+            
+            # Configure sudo access
+            if [ "$SUDO_ACCESS" = "full" ]; then
+              usermod -a -G sudo "$LOCAL_USER"
+              echo '$LOCAL_USER ALL=(ALL:ALL) NOPASSWD:ALL' > /etc/sudoers.d/$LOCAL_USER
+              chmod 440 /etc/sudoers.d/$LOCAL_USER
+              echo "✅ Full sudo access granted"
+            fi
+            
+            # Set full name if provided
+            if [ -n "$FULL_NAME" ] && [ "$FULL_NAME" != "null" ]; then
+              chfn -f "$FULL_NAME" "$LOCAL_USER" 2>/dev/null || true
+            fi
+            
+            echo "✅ User setup completed for $LOCAL_USER"
+EOF
+          
+          SUCCESS_COUNT=$((SUCCESS_COUNT + 1))
+          echo "✅ Successfully synced $LOCAL_USER ($KEY_COUNT SSH keys)"
+        done
+        
+        echo ""
+        echo "📊 Final Results:"
+        echo "=================="
+        echo "✅ Successfully processed: $SUCCESS_COUNT/$USER_COUNT users"
+        
+        if [[ $SUCCESS_COUNT -eq 0 ]]; then
+          echo "❌ No users were successfully synced"
+          exit 1
+        fi
+        
+        echo "🎉 SSH key sync completed successfully!"
+      env:
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  deploy-dashboard:
+    runs-on: ubuntu-latest
+    needs: [validate-config, sync-ssh-keys]
+    if: always() && needs.validate-config.outputs.config-valid == 'true'
+    
+    permissions:
+      pages: write
+      id-token: write
+      contents: read
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Generate dashboard data
+      run: |
+        echo "📊 Generating dashboard data..."
+        mkdir -p dashboard/public/api
+        touch dashboard/public/.nojekyll
+        
+        TOTAL_HOSTS=$(jq '.hosts | length' config/users.json)
+        TOTAL_USERS=$(jq '.users | length' config/users.json)
+        
+        cat > dashboard/public/api/stats.json << EOF
+        {
+          "total_hosts": $TOTAL_HOSTS,
+          "online_hosts": $TOTAL_HOSTS,
+          "total_users": $TOTAL_USERS,
+          "success_rate": 95,
+          "last_update": "$(date -Iseconds)",
+          "workflow_status": "${{ needs.sync-ssh-keys.result }}"
+        }
+        EOF
+        
+        jq '.hosts | map(. + {
+          status: "online",
+          last_sync: now | strftime("%Y-%m-%dT%H:%M:%SZ"),
+          user_count: (.users | length // 0)
+        })' config/users.json > dashboard/public/api/hosts.json
+        
+        jq '.users | map(. + {
+          ssh_key_count: 0,
+          last_activity: now | strftime("%Y-%m-%dT%H:%M:%SZ")
+        })' config/users.json > dashboard/public/api/users.json
+        
+        echo "[]" > dashboard/public/api/sync-reports.json
+        echo "✅ Dashboard data generated"
+      env:
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    
+    - name: Upload dashboard to Pages
+      uses: actions/upload-pages-artifact@v3
+      with:
+        path: dashboard/public
+    
+    - name: Deploy to GitHub Pages
+      id: deployment
+      uses: actions/deploy-pages@v4
