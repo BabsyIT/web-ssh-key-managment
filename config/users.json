@@ -1,6 +1,7 @@
 {
   "_comment": "SSH Key Management Configuration - Update this file to manage your servers and users",
   "_docs": "https://github.com/stefan-ffr/web-ssh-key-managment/wiki",
+  "_test_trigger": "Workflow test triggered on 2025-08-17",
   
   "users": [
     {
