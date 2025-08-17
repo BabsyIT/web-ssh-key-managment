@@ -1,0 +1,141 @@
+name: SSH Key Management - Simple Test
+
+on:
+  workflow_dispatch:
+
+env:
+  USER_CONFIG: 'config/users.json'
+
+jobs:
+  simple-ssh-test:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Setup SSH and Run Simple Commands
+      run: |
+        echo "🚀 Simple SSH Test auf docker1.test.babsy.ch"
+        echo "=============================================="
+        
+        # Setup SSH
+        mkdir -p ~/.ssh
+        chmod 700 ~/.ssh
+        echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
+        chmod 600 ~/.ssh/id_rsa
+        ssh-keyscan -H 78.47.10.169 >> ~/.ssh/known_hosts 2>/dev/null
+        
+        TARGET_IP="78.47.10.169"
+        
+        echo "1. 🧪 Basic SSH Test:"
+        ssh -o ConnectTimeout=10 -o StrictHostKeyChecking=no root@$TARGET_IP "
+          echo '✅ SSH connection successful'
+          echo 'Current user:' \$(whoami)
+          echo 'Server info:' \$(uname -a)
+          echo 'Free disk space:' \$(df -h / | tail -1)
+        "
+        
+        echo ""
+        echo "2. 👤 User Management Test:"
+        ssh -o ConnectTimeout=10 -o StrictHostKeyChecking=no root@$TARGET_IP "
+          echo 'Testing user creation...'
+          
+          # Check if user stefan exists
+          if id stefan 2>/dev/null; then
+            echo '⚠️  User stefan already exists'
+            echo 'Current user info:'
+            id stefan
+            ls -la /home/stefan/ 2>/dev/null || echo 'Home directory does not exist'
+          else
+            echo '➕ Creating user stefan...'
+            if useradd -m -s /bin/bash stefan; then
+              echo '✅ User stefan created successfully'
+            else
+              echo '❌ Failed to create user stefan'
+              exit 1
+            fi
+          fi
+        "
+        
+        echo ""
+        echo "3. 🔐 SSH Directory Test:"
+        ssh -o ConnectTimeout=10 -o StrictHostKeyChecking=no root@$TARGET_IP "
+          echo 'Setting up SSH directory for stefan...'
+          
+          # Ensure user exists
+          if ! id stefan 2>/dev/null; then
+            echo '❌ User stefan does not exist'
+            exit 1
+          fi
+          
+          # Create SSH directory
+          mkdir -p /home/stefan/.ssh
+          chmod 700 /home/stefan/.ssh
+          chown stefan:stefan /home/stefan/.ssh
+          
+          echo '✅ SSH directory created'
+          ls -la /home/stefan/.ssh/
+        "
+        
+        echo ""
+        echo "4. 🔑 GitHub SSH Keys Test:"
+        GITHUB_USER="stefan-ffr"
+        echo "Fetching SSH keys for GitHub user: $GITHUB_USER"
+        
+        KEYS=\$(curl -s --max-time 10 \"https://github.com/\${GITHUB_USER}.keys\")
+        
+        if [[ -z \"\$KEYS\" || \"\$KEYS\" == *\"Not Found\"* ]]; then
+          echo \"❌ No SSH keys found for \$GITHUB_USER\"
+          exit 1
+        fi
+        
+        KEY_COUNT=\$(echo \"\$KEYS\" | grep -c \"^ssh-\" || echo \"0\")
+        echo \"✅ Found \$KEY_COUNT SSH keys\"
+        
+        echo ""
+        echo "5. 📝 Installing SSH Keys:"
+        ssh -o ConnectTimeout=10 -o StrictHostKeyChecking=no root@$TARGET_IP "
+          echo 'Installing SSH keys for stefan...'
+          
+          # Install keys
+          cat > /home/stefan/.ssh/authorized_keys << 'EOF'
+        \$KEYS
+        EOF
+          
+          chmod 600 /home/stefan/.ssh/authorized_keys
+          chown stefan:stefan /home/stefan/.ssh/authorized_keys
+          
+          echo '✅ SSH keys installed'
+          echo 'Installed keys:'
+          wc -l /home/stefan/.ssh/authorized_keys
+        "
+        
+        echo ""
+        echo "6. 🔧 Sudo Configuration Test:"
+        ssh -o ConnectTimeout=10 -o StrictHostKeyChecking=no root@$TARGET_IP "
+          echo 'Configuring sudo access for stefan...'
+          
+          # Add to sudo group
+          usermod -a -G sudo stefan
+          
+          # Create sudoers file
+          echo 'stefan ALL=(ALL:ALL) NOPASSWD:ALL' > /etc/sudoers.d/stefan
+          chmod 440 /etc/sudoers.d/stefan
+          
+          echo '✅ Sudo access configured'
+          groups stefan
+        "
+        
+        echo ""
+        echo "7. ✅ Final Verification:"
+        ssh -o ConnectTimeout=10 -o StrictHostKeyChecking=no root@$TARGET_IP "
+          echo 'Final verification:'
+          echo 'User info:' \$(id stefan)
+          echo 'SSH keys count:' \$(wc -l < /home/stefan/.ssh/authorized_keys)
+          echo 'Sudo groups:' \$(groups stefan)
+          echo 'Home directory:' \$(ls -la /home/stefan/)
+        "
+        
+        echo ""
+        echo "🎉 ALL TESTS COMPLETED SUCCESSFULLY!"
+        echo "User stefan should now be able to SSH to the server"
