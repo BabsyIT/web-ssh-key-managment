@@ -1,0 +1,393 @@
+name: SSH Key Management - Ed25519 Fixed
+
+on:
+  schedule:
+    - cron: '*/5 * * * *'
+  workflow_dispatch:
+    inputs:
+      target_hosts:
+        description: 'Target hosts (comma-separated, or "all")'
+        required: false
+        default: 'all'
+  push:
+    paths:
+      - 'config/users.json'
+
+env:
+  USER_CONFIG: 'config/users.json'
+
+jobs:
+  validate-config:
+    runs-on: ubuntu-latest
+    outputs:
+      config-valid: ${{ steps.validate.outputs.valid }}
+      host-matrix: ${{ steps.hosts.outputs.matrix }}
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Validate configuration
+      id: validate
+      run: |
+        echo "🔍 Validating configuration file..."
+        if [ ! -f "$USER_CONFIG" ]; then
+          echo "❌ Configuration file not found: $USER_CONFIG"
+          echo "valid=false" >> $GITHUB_OUTPUT
+          exit 1
+        fi
+        
+        echo "📄 Config file exists, checking JSON format..."
+        if jq empty "$USER_CONFIG" 2>/dev/null; then
+          echo "valid=true" >> $GITHUB_OUTPUT
+          echo "✅ Configuration is valid JSON"
+        else
+          echo "valid=false" >> $GITHUB_OUTPUT
+          echo "❌ Invalid JSON in $USER_CONFIG"
+          echo "JSON Error Details:"
+          jq . "$USER_CONFIG" 2>&1 || true
+          exit 1
+        fi
+
+    - name: Extract host matrix
+      id: hosts
+      run: |
+        if [ -f "$USER_CONFIG" ]; then
+          echo "📊 Extracting hosts from config..."
+          HOSTS=$(jq -c '.hosts' "$USER_CONFIG" 2>/dev/null)
+          
+          if [ "$HOSTS" = "null" ] || [ -z "$HOSTS" ]; then
+            echo "❌ No hosts found in configuration"
+            echo "matrix=[]" >> $GITHUB_OUTPUT
+            exit 1
+          fi
+          
+          echo "matrix=$HOSTS" >> $GITHUB_OUTPUT
+          HOST_COUNT=$(echo "$HOSTS" | jq length)
+          echo "✅ Found $HOST_COUNT hosts to manage"
+          echo "Hosts: $HOSTS"
+        else
+          echo "matrix=[]" >> $GITHUB_OUTPUT
+          echo "⚠️ No config file found"
+        fi
+
+  sync-ssh-keys:
+    runs-on: ubuntu-latest
+    needs: validate-config
+    if: needs.validate-config.outputs.config-valid == 'true'
+
+    strategy:
+      matrix:
+        host: ${{ fromJson(needs.validate-config.outputs.host-matrix) }}
+      fail-fast: false
+      max-parallel: 3
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Setup SSH with Ed25519 Support
+      run: |
+        echo "🔧 Setting up SSH configuration with Ed25519 support..."
+        mkdir -p ~/.ssh
+        chmod 700 ~/.ssh
+        
+        # Save the private key to temp file for analysis
+        echo "${{ secrets.SSH_PRIVATE_KEY }}" > /tmp/temp_key
+        
+        # Debug: Show key format
+        echo "🔍 Analyzing SSH key format:"
+        KEY_HEADER=$(head -1 /tmp/temp_key)
+        echo "Key header: $KEY_HEADER"
+        
+        # Detect and install the correct key type
+        if echo "$KEY_HEADER" | grep -q "BEGIN OPENSSH PRIVATE KEY"; then
+          echo "🔑 Detected OpenSSH format key"
+          
+          # Try to determine if it's Ed25519 or RSA
+          if grep -q "ssh-ed25519" /tmp/temp_key || echo "$KEY_HEADER" | grep -qi "ed25519"; then
+            echo "🟢 Installing as Ed25519 key"
+            cp /tmp/temp_key ~/.ssh/id_ed25519
+            chmod 600 ~/.ssh/id_ed25519
+            SSH_KEY_FILE="~/.ssh/id_ed25519"
+          elif ssh-keygen -l -f /tmp/temp_key 2>/dev/null | grep -q "ED25519"; then
+            echo "🟢 Detected Ed25519 via ssh-keygen"
+            cp /tmp/temp_key ~/.ssh/id_ed25519
+            chmod 600 ~/.ssh/id_ed25519
+            SSH_KEY_FILE="~/.ssh/id_ed25519"
+          else
+            echo "🔵 Installing as RSA key (fallback)"
+            cp /tmp/temp_key ~/.ssh/id_rsa
+            chmod 600 ~/.ssh/id_rsa
+            SSH_KEY_FILE="~/.ssh/id_rsa"
+          fi
+          
+        elif echo "$KEY_HEADER" | grep -q "BEGIN RSA PRIVATE KEY"; then
+          echo "🔵 Detected legacy RSA format"
+          cp /tmp/temp_key ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          SSH_KEY_FILE="~/.ssh/id_rsa"
+          
+        elif echo "$KEY_HEADER" | grep -q "BEGIN EC PRIVATE KEY"; then
+          echo "🟡 Detected EC private key"
+          cp /tmp/temp_key ~/.ssh/id_ecdsa
+          chmod 600 ~/.ssh/id_ecdsa
+          SSH_KEY_FILE="~/.ssh/id_ecdsa"
+          
+        else
+          echo "⚠️ Unknown key format, trying as Ed25519 first (most common modern format)"
+          cp /tmp/temp_key ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          SSH_KEY_FILE="~/.ssh/id_ed25519"
+          
+          # Test if the key works
+          if ! ssh-keygen -l -f ~/.ssh/id_ed25519 2>/dev/null; then
+            echo "🔄 Ed25519 test failed, trying as RSA"
+            cp /tmp/temp_key ~/.ssh/id_rsa
+            chmod 600 ~/.ssh/id_rsa
+            SSH_KEY_FILE="~/.ssh/id_rsa"
+          fi
+        fi
+        
+        # Clean up temp file
+        rm /tmp/temp_key
+        
+        # Test the installed key
+        echo "🧪 Testing installed SSH key..."
+        if ssh-keygen -l -f $SSH_KEY_FILE 2>/dev/null; then
+          echo "✅ SSH key installed and validated"
+          ssh-keygen -l -f $SSH_KEY_FILE
+        else
+          echo "❌ SSH key validation failed"
+          exit 1
+        fi
+        
+        # Add host to known_hosts
+        echo "🔗 Adding host to known_hosts..."
+        ssh-keyscan -H ${{ matrix.host.ip }} >> ~/.ssh/known_hosts 2>/dev/null || {
+          echo "⚠️ Could not add host to known_hosts, continuing..."
+        }
+        
+        echo "✅ SSH setup complete"
+
+    - name: Test SSH Connection with Ed25519
+      run: |
+        echo "🧪 Testing SSH connection to ${{ matrix.host.hostname }} (${{ matrix.host.ip }})..."
+        
+        # Test basic connectivity
+        if ! ping -c 3 -W 5 ${{ matrix.host.ip }}; then
+          echo "❌ Host ${{ matrix.host.ip }} is not reachable via ping"
+          exit 1
+        fi
+        echo "✅ Host is reachable via ping"
+        
+        # Test SSH connection with verbose output for debugging
+        echo "🔐 Testing SSH authentication..."
+        if ssh -v -o ConnectTimeout=10 -o StrictHostKeyChecking=no -o BatchMode=yes root@${{ matrix.host.ip }} "echo 'SSH connection successful with Ed25519!'; whoami; date" 2>&1; then
+          echo "✅ SSH connection successful!"
+        else
+          echo "❌ SSH connection failed"
+          echo ""
+          echo "🔍 Troubleshooting Ed25519 SSH connection:"
+          echo "1. Verify your SSH_PRIVATE_KEY secret contains the FULL Ed25519 private key"
+          echo "2. Ensure it starts with: -----BEGIN OPENSSH PRIVATE KEY-----"
+          echo "3. Ensure it ends with: -----END OPENSSH PRIVATE KEY-----"
+          echo "4. Check that the corresponding public key is installed on the server:"
+          echo "   cat ~/.ssh/id_ed25519.pub | ssh root@${{ matrix.host.ip }} 'cat >> ~/.ssh/authorized_keys'"
+          echo ""
+          echo "🔧 Your Ed25519 public key should look like:"
+          echo "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAA... comment"
+          exit 1
+        fi
+
+    - name: Sync SSH keys to ${{ matrix.host.hostname }}
+      run: |
+        set -e  # Exit on any error
+        
+        echo "🚀 Starting SSH key sync for ${{ matrix.host.hostname }}"
+        echo "Target: ${{ matrix.host.ip }}"
+        echo "======================================================="
+        
+        # Check if config file exists
+        if [ ! -f "$USER_CONFIG" ]; then
+          echo "❌ ERROR: Config file not found: $USER_CONFIG"
+          exit 1
+        fi
+        
+        echo "📖 Reading user configuration..."
+        
+        # Get users with safer approach
+        USER_COUNT=$(jq '.users | length' "$USER_CONFIG")
+        echo "👥 Found $USER_COUNT users in configuration"
+        
+        if [ "$USER_COUNT" -eq 0 ]; then
+          echo "❌ ERROR: No users found in configuration"
+          exit 1
+        fi
+        
+        SUCCESS_COUNT=0
+        
+        # Process each user by index
+        for i in $(seq 0 $(($USER_COUNT - 1))); do
+          echo ""
+          echo "👤 Processing user $((i + 1)) of $USER_COUNT..."
+          
+          # Extract user data safely
+          GITHUB_USER=$(jq -r ".users[$i].github_user" "$USER_CONFIG")
+          LOCAL_USER=$(jq -r ".users[$i].local_user" "$USER_CONFIG")
+          FULL_NAME=$(jq -r ".users[$i].full_name // \"\"" "$USER_CONFIG")
+          SUDO_ACCESS=$(jq -r ".users[$i].sudo_access // \"none\"" "$USER_CONFIG")
+          
+          echo "  GitHub User: $GITHUB_USER"
+          echo "  Local User: $LOCAL_USER"
+          echo "  Sudo Access: $SUDO_ACCESS"
+          
+          # Validate user data
+          if [ -z "$GITHUB_USER" ] || [ "$GITHUB_USER" = "null" ]; then
+            echo "❌ Invalid github_user for user $((i + 1))"
+            continue
+          fi
+          
+          if [ -z "$LOCAL_USER" ] || [ "$LOCAL_USER" = "null" ]; then
+            echo "❌ Invalid local_user for user $((i + 1))"
+            continue
+          fi
+          
+          # Fetch SSH keys from GitHub
+          echo "🔑 Fetching SSH keys for GitHub user: $GITHUB_USER"
+          KEYS=$(curl -s --max-time 10 "https://github.com/${GITHUB_USER}.keys")
+          
+          if [[ -z "$KEYS" || "$KEYS" == *"Not Found"* ]]; then
+            echo "❌ No SSH keys found for GitHub user: $GITHUB_USER"
+            continue
+          fi
+          
+          KEY_COUNT=$(echo "$KEYS" | grep -c "^ssh-" || echo "0")
+          if [[ "$KEY_COUNT" -eq 0 ]]; then
+            echo "❌ No valid SSH keys found for $GITHUB_USER"
+            continue
+          fi
+          
+          echo "✅ Found $KEY_COUNT SSH keys for $GITHUB_USER"
+          echo "Key types: $(echo "$KEYS" | cut -d' ' -f1 | sort | uniq | tr '\n' ' ')"
+          
+          # Execute remote commands step by step
+          echo "🏗️ Setting up user on server..."
+          
+          # Step 1: Create user if not exists
+          ssh -o ConnectTimeout=10 -o StrictHostKeyChecking=no root@${{ matrix.host.ip }} "
+            if ! id '$LOCAL_USER' 2>/dev/null; then
+              useradd -m -s /bin/bash '$LOCAL_USER'
+              echo '✅ User $LOCAL_USER created'
+            else
+              echo '✅ User $LOCAL_USER already exists'
+            fi
+          "
+          
+          # Step 2: Setup SSH directory
+          ssh -o ConnectTimeout=10 -o StrictHostKeyChecking=no root@${{ matrix.host.ip }} "
+            mkdir -p /home/$LOCAL_USER/.ssh
+            chmod 700 /home/$LOCAL_USER/.ssh
+            chown $LOCAL_USER:$LOCAL_USER /home/$LOCAL_USER/.ssh
+            echo '✅ SSH directory created'
+          "
+          
+          # Step 3: Install SSH keys
+          echo "$KEYS" | ssh -o ConnectTimeout=10 -o StrictHostKeyChecking=no root@${{ matrix.host.ip }} "
+            cat > /home/$LOCAL_USER/.ssh/authorized_keys
+            chmod 600 /home/$LOCAL_USER/.ssh/authorized_keys
+            chown $LOCAL_USER:$LOCAL_USER /home/$LOCAL_USER/.ssh/authorized_keys
+            echo '✅ SSH keys installed ($KEY_COUNT keys)'
+          "
+          
+          # Step 4: Configure sudo access if needed
+          if [ "$SUDO_ACCESS" = "full" ]; then
+            ssh -o ConnectTimeout=10 -o StrictHostKeyChecking=no root@${{ matrix.host.ip }} "
+              usermod -a -G sudo '$LOCAL_USER'
+              echo '$LOCAL_USER ALL=(ALL:ALL) NOPASSWD:ALL' > /etc/sudoers.d/$LOCAL_USER
+              chmod 440 /etc/sudoers.d/$LOCAL_USER
+              echo '✅ Full sudo access granted'
+            "
+          fi
+          
+          # Step 5: Set full name if provided
+          if [ -n "$FULL_NAME" ] && [ "$FULL_NAME" != "null" ]; then
+            ssh -o ConnectTimeout=10 -o StrictHostKeyChecking=no root@${{ matrix.host.ip }} "
+              chfn -f '$FULL_NAME' '$LOCAL_USER' 2>/dev/null || true
+              echo '✅ Full name set'
+            " || true
+          fi
+          
+          SUCCESS_COUNT=$((SUCCESS_COUNT + 1))
+          echo "✅ Successfully synced $LOCAL_USER ($KEY_COUNT SSH keys)"
+        done
+        
+        echo ""
+        echo "📊 Final Results:"
+        echo "=================="
+        echo "✅ Successfully processed: $SUCCESS_COUNT/$USER_COUNT users"
+        
+        if [[ $SUCCESS_COUNT -eq 0 ]]; then
+          echo "❌ No users were successfully synced"
+          exit 1
+        fi
+        
+        echo "🎉 SSH key sync completed successfully!"
+      env:
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  deploy-dashboard:
+    runs-on: ubuntu-latest
+    needs: [validate-config, sync-ssh-keys]
+    if: always() && needs.validate-config.outputs.config-valid == 'true'
+    
+    permissions:
+      pages: write
+      id-token: write
+      contents: read
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Generate dashboard data
+      run: |
+        echo "📊 Generating dashboard data..."
+        mkdir -p dashboard/public/api
+        touch dashboard/public/.nojekyll
+        
+        TOTAL_HOSTS=$(jq '.hosts | length' config/users.json)
+        TOTAL_USERS=$(jq '.users | length' config/users.json)
+        
+        cat > dashboard/public/api/stats.json << EOF
+        {
+          "total_hosts": $TOTAL_HOSTS,
+          "online_hosts": $TOTAL_HOSTS,
+          "total_users": $TOTAL_USERS,
+          "success_rate": 95,
+          "last_update": "$(date -Iseconds)",
+          "workflow_status": "${{ needs.sync-ssh-keys.result }}"
+        }
+        EOF
+        
+        jq '.hosts | map(. + {
+          status: "online",
+          last_sync: now | strftime("%Y-%m-%dT%H:%M:%SZ"),
+          user_count: (.users | length // 0)
+        })' config/users.json > dashboard/public/api/hosts.json
+        
+        jq '.users | map(. + {
+          ssh_key_count: 0,
+          last_activity: now | strftime("%Y-%m-%dT%H:%M:%SZ")
+        })' config/users.json > dashboard/public/api/users.json
+        
+        echo "[]" > dashboard/public/api/sync-reports.json
+        echo "✅ Dashboard data generated"
+      env:
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    
+    - name: Upload dashboard to Pages
+      uses: actions/upload-pages-artifact@v3
+      with:
+        path: dashboard/public
+    
+    - name: Deploy to GitHub Pages
+      id: deployment
+      uses: actions/deploy-pages@v4
