@@ -1,0 +1,237 @@
+name: SSH Key Management - Debug Mode
+
+on:
+  workflow_dispatch:
+    inputs:
+      debug_mode:
+        description: 'Enable debug mode'
+        required: false
+        default: 'true'
+  push:
+    paths:
+      - 'config/users.json'
+
+env:
+  USER_CONFIG: 'config/users.json'
+
+jobs:
+  debug-ssh-setup:
+    runs-on: ubuntu-latest
+    if: github.event.inputs.debug_mode == 'true' || github.event_name == 'push'
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Debug SSH Key Secret
+      run: |
+        echo "🔍 SSH Key Secret Debug Information:"
+        echo "======================================"
+        
+        if [ -z "${{ secrets.SSH_PRIVATE_KEY }}" ]; then
+          echo "❌ FEHLER: SSH_PRIVATE_KEY Secret ist leer oder nicht gesetzt!"
+          echo "💡 Lösung: Gehen Sie zu Repository Settings → Secrets → Actions"
+          echo "          und erstellen Sie das SSH_PRIVATE_KEY Secret"
+          exit 1
+        fi
+        
+        # Check key format
+        KEY_FIRST_LINE=$(echo '${{ secrets.SSH_PRIVATE_KEY }}' | head -1)
+        KEY_LAST_LINE=$(echo '${{ secrets.SSH_PRIVATE_KEY }}' | tail -1)
+        KEY_LINE_COUNT=$(echo '${{ secrets.SSH_PRIVATE_KEY }}' | wc -l)
+        
+        echo "✅ SSH_PRIVATE_KEY Secret ist vorhanden"
+        echo "📏 Anzahl Zeilen: $KEY_LINE_COUNT"
+        echo "🔤 Erste Zeile: $KEY_FIRST_LINE"
+        echo "🔤 Letzte Zeile: $KEY_LAST_LINE"
+        
+        # Validate key format
+        if echo "$KEY_FIRST_LINE" | grep -q "BEGIN.*PRIVATE KEY"; then
+          echo "✅ Key Format: Korrekt (beginnt mit BEGIN...PRIVATE KEY)"
+        else
+          echo "❌ Key Format: FEHLERHAFT!"
+          echo "💡 Ihr SSH Key muss beginnen mit:"
+          echo "   -----BEGIN OPENSSH PRIVATE KEY----- oder"
+          echo "   -----BEGIN RSA PRIVATE KEY-----"
+          exit 1
+        fi
+        
+        if echo "$KEY_LAST_LINE" | grep -q "END.*PRIVATE KEY"; then
+          echo "✅ Key Format: Korrekt (endet mit END...PRIVATE KEY)"
+        else
+          echo "❌ Key Format: FEHLERHAFT!"
+          echo "💡 Ihr SSH Key muss enden mit:"
+          echo "   -----END OPENSSH PRIVATE KEY----- oder"
+          echo "   -----END RSA PRIVATE KEY-----"
+          exit 1
+        fi
+
+    - name: Test Network Connectivity
+      run: |
+        echo "🌐 Netzwerk-Konnektivität Test:"
+        echo "=============================="
+        
+        TARGET_IP="78.47.10.169"
+        TARGET_HOST="docker1.test.babsy.ch"
+        
+        # Test DNS resolution
+        echo "🔍 DNS Test für $TARGET_HOST:"
+        if nslookup $TARGET_HOST; then
+          echo "✅ DNS Auflösung erfolgreich"
+        else
+          echo "⚠️ DNS Auflösung fehlgeschlagen, verwende direkte IP"
+        fi
+        
+        # Test ping
+        echo "🏓 Ping Test zu $TARGET_IP:"
+        if ping -c 3 -W 5 $TARGET_IP; then
+          echo "✅ Host $TARGET_IP ist erreichbar"
+        else
+          echo "❌ Host $TARGET_IP ist NICHT erreichbar!"
+          echo "💡 Mögliche Probleme:"
+          echo "   - Server ist offline"
+          echo "   - Firewall blockiert ICMP"
+          echo "   - Falsche IP-Adresse"
+          exit 1
+        fi
+        
+        # Test SSH port
+        echo "🚪 SSH Port Test (Port 22):"
+        if timeout 10 bash -c "</dev/tcp/$TARGET_IP/22"; then
+          echo "✅ SSH Port 22 ist offen auf $TARGET_IP"
+        else
+          echo "❌ SSH Port 22 ist NICHT erreichbar!"
+          echo "💡 Mögliche Probleme:"
+          echo "   - SSH Daemon nicht gestartet"
+          echo "   - Firewall blockiert Port 22"
+          echo "   - SSH läuft auf anderem Port"
+          exit 1
+        fi
+
+    - name: Test SSH Authentication
+      run: |
+        echo "🔐 SSH Authentifizierung Test:"
+        echo "============================="
+        
+        # Setup SSH key
+        mkdir -p ~/.ssh
+        chmod 700 ~/.ssh
+        echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
+        chmod 600 ~/.ssh/id_rsa
+        
+        # Add host to known_hosts
+        ssh-keyscan -H 78.47.10.169 >> ~/.ssh/known_hosts 2>/dev/null
+        
+        TARGET_IP="78.47.10.169"
+        
+        echo "🧪 Teste SSH-Verbindung als root@$TARGET_IP..."
+        
+        # Test SSH connection with detailed output
+        if ssh -v -o ConnectTimeout=10 -o StrictHostKeyChecking=no -o BatchMode=yes root@$TARGET_IP "echo 'SSH Verbindung erfolgreich!'; whoami; uname -a" 2>&1; then
+          echo "✅ SSH Authentifizierung erfolgreich!"
+        else
+          echo "❌ SSH Authentifizierung FEHLGESCHLAGEN!"
+          echo ""
+          echo "🔍 Häufige Probleme und Lösungen:"
+          echo "=================================="
+          echo "1. ❌ Public Key nicht auf Server installiert:"
+          echo "   💡 Führen Sie auf dem Server aus:"
+          echo "      mkdir -p /root/.ssh"
+          echo "      echo 'IHR_PUBLIC_KEY' >> /root/.ssh/authorized_keys"
+          echo "      chmod 600 /root/.ssh/authorized_keys"
+          echo ""
+          echo "2. ❌ Root SSH ist deaktiviert:"
+          echo "   💡 In /etc/ssh/sshd_config ändern:"
+          echo "      PermitRootLogin yes"
+          echo "      dann: systemctl restart sshd"
+          echo ""
+          echo "3. ❌ Falscher SSH Key:"
+          echo "   💡 Überprüfen Sie, dass der private Key zum"
+          echo "      public Key auf dem Server passt"
+          echo ""
+          echo "🔧 Debug SSH-Verbindung:"
+          echo "Versuchen Sie manuell:"
+          echo "ssh -v root@$TARGET_IP"
+          
+          exit 1
+        fi
+
+    - name: Test GitHub SSH Keys API
+      run: |
+        echo "🐙 GitHub SSH Keys API Test:"
+        echo "============================"
+        
+        GITHUB_USER="stefan-ffr"
+        
+        echo "📡 Abrufen der SSH Keys für GitHub User: $GITHUB_USER"
+        
+        RESPONSE=$(curl -s -w "%{http_code}" "https://github.com/${GITHUB_USER}.keys")
+        HTTP_CODE="${RESPONSE: -3}"
+        KEYS="${RESPONSE%???}"
+        
+        echo "📊 HTTP Status Code: $HTTP_CODE"
+        
+        if [ "$HTTP_CODE" = "200" ]; then
+          echo "✅ GitHub API Aufruf erfolgreich"
+          
+          KEY_COUNT=$(echo "$KEYS" | grep -c "^ssh-" || echo "0")
+          echo "🔑 Anzahl SSH Keys gefunden: $KEY_COUNT"
+          
+          if [ "$KEY_COUNT" -gt 0 ]; then
+            echo "✅ SSH Keys für $GITHUB_USER gefunden:"
+            echo "$KEYS" | head -5
+            if [ "$KEY_COUNT" -gt 5 ]; then
+              echo "... und $(($KEY_COUNT - 5)) weitere"
+            fi
+          else
+            echo "❌ Keine SSH Keys für $GITHUB_USER gefunden!"
+            echo "💡 Lösung: Fügen Sie SSH Keys zu Ihrem GitHub Profil hinzu:"
+            echo "   https://github.com/settings/keys"
+          fi
+        else
+          echo "❌ GitHub API Aufruf fehlgeschlagen!"
+          echo "📝 Response: $KEYS"
+          echo "💡 Überprüfen Sie den GitHub Username in der Konfiguration"
+          exit 1
+        fi
+
+  validate-config:
+    runs-on: ubuntu-latest
+    outputs:
+      config-valid: ${{ steps.validate.outputs.valid }}
+      host-matrix: ${{ steps.hosts.outputs.matrix }}
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Validate configuration
+      id: validate
+      run: |
+        echo "🔍 Validating configuration file..."
+        if [ ! -f "$USER_CONFIG" ]; then
+          echo "❌ Configuration file not found: $USER_CONFIG"
+          echo "valid=false" >> $GITHUB_OUTPUT
+          exit 1
+        fi
+        
+        if jq empty "$USER_CONFIG" 2>/dev/null; then
+          echo "valid=true" >> $GITHUB_OUTPUT
+          echo "✅ Configuration is valid"
+        else
+          echo "valid=false" >> $GITHUB_OUTPUT
+          echo "❌ Invalid JSON in $USER_CONFIG"
+          jq . "$USER_CONFIG" || true
+          exit 1
+        fi
+
+    - name: Extract host matrix
+      id: hosts
+      run: |
+        if [ -f "$USER_CONFIG" ]; then
+          HOSTS=$(jq -c '.hosts' "$USER_CONFIG")
+          echo "matrix=$HOSTS" >> $GITHUB_OUTPUT
+          echo "📊 Found $(echo "$HOSTS" | jq length) hosts to manage"
+          echo "Hosts: $HOSTS"
+        else
+          echo "matrix=[]" >> $GITHUB_OUTPUT
+          echo "⚠️ No config file found"
+        fi
