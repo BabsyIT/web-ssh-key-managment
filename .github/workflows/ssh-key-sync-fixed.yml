@@ -181,47 +181,52 @@ jobs:
           
           echo "✅ Found $KEY_COUNT SSH keys for $GITHUB_USER"
           
-          # Execute all remote commands in a single SSH session for reliability
+          # Execute remote commands step by step for better error handling
           echo "🏗️ Setting up user on server..."
-          ssh -o ConnectTimeout=10 -o StrictHostKeyChecking=no root@${{ matrix.host.ip }} << EOF
-            set -e
-            
-            echo "Creating/updating user: $LOCAL_USER"
-            
-            # Create user if not exists
-            if ! id "$LOCAL_USER" 2>/dev/null; then
-              useradd -m -s /bin/bash "$LOCAL_USER"
-              echo "✅ User $LOCAL_USER created"
+          
+          # Step 1: Create user if not exists
+          ssh -o ConnectTimeout=10 -o StrictHostKeyChecking=no root@${{ matrix.host.ip }} "
+            if ! id '$LOCAL_USER' 2>/dev/null; then
+              useradd -m -s /bin/bash '$LOCAL_USER'
+              echo '✅ User $LOCAL_USER created'
             else
-              echo "✅ User $LOCAL_USER already exists"
+              echo '✅ User $LOCAL_USER already exists'
             fi
-            
-            # Setup SSH directory
+          "
+          
+          # Step 2: Setup SSH directory
+          ssh -o ConnectTimeout=10 -o StrictHostKeyChecking=no root@${{ matrix.host.ip }} "
             mkdir -p /home/$LOCAL_USER/.ssh
             chmod 700 /home/$LOCAL_USER/.ssh
-            
-            # Install SSH keys
-            echo '$KEYS' > /home/$LOCAL_USER/.ssh/authorized_keys
+            chown $LOCAL_USER:$LOCAL_USER /home/$LOCAL_USER/.ssh
+            echo '✅ SSH directory created'
+          "
+          
+          # Step 3: Install SSH keys
+          echo "$KEYS" | ssh -o ConnectTimeout=10 -o StrictHostKeyChecking=no root@${{ matrix.host.ip }} "
+            cat > /home/$LOCAL_USER/.ssh/authorized_keys
             chmod 600 /home/$LOCAL_USER/.ssh/authorized_keys
-            chown -R $LOCAL_USER:$LOCAL_USER /home/$LOCAL_USER/.ssh
-            
-            echo "✅ SSH keys installed ($KEY_COUNT keys)"
-            
-            # Configure sudo access
-            if [ "$SUDO_ACCESS" = "full" ]; then
-              usermod -a -G sudo "$LOCAL_USER"
+            chown $LOCAL_USER:$LOCAL_USER /home/$LOCAL_USER/.ssh/authorized_keys
+            echo '✅ SSH keys installed ($KEY_COUNT keys)'
+          "
+          
+          # Step 4: Configure sudo access if needed
+          if [ "$SUDO_ACCESS" = "full" ]; then
+            ssh -o ConnectTimeout=10 -o StrictHostKeyChecking=no root@${{ matrix.host.ip }} "
+              usermod -a -G sudo '$LOCAL_USER'
               echo '$LOCAL_USER ALL=(ALL:ALL) NOPASSWD:ALL' > /etc/sudoers.d/$LOCAL_USER
               chmod 440 /etc/sudoers.d/$LOCAL_USER
-              echo "✅ Full sudo access granted"
-            fi
-            
-            # Set full name if provided
-            if [ -n "$FULL_NAME" ] && [ "$FULL_NAME" != "null" ]; then
-              chfn -f "$FULL_NAME" "$LOCAL_USER" 2>/dev/null || true
-            fi
-            
-            echo "✅ User setup completed for $LOCAL_USER"
-EOF
+              echo '✅ Full sudo access granted'
+            "
+          fi
+          
+          # Step 5: Set full name if provided
+          if [ -n "$FULL_NAME" ] && [ "$FULL_NAME" != "null" ]; then
+            ssh -o ConnectTimeout=10 -o StrictHostKeyChecking=no root@${{ matrix.host.ip }} "
+              chfn -f '$FULL_NAME' '$LOCAL_USER' 2>/dev/null || true
+              echo '✅ Full name set'
+            " || true
+          fi
           
           SUCCESS_COUNT=$((SUCCESS_COUNT + 1))
           echo "✅ Successfully synced $LOCAL_USER ($KEY_COUNT SSH keys)"
@@ -282,7 +287,7 @@ EOF
         
         jq '.users | map(. + {
           ssh_key_count: 0,
-          last_activity: now | strftime("%Y-%m-%dT%H:%M:%SZ")
+          last_activity: now | strftime("%Y-%m-%dT%H:%M:%SZ"
         })' config/users.json > dashboard/public/api/users.json
         
         echo "[]" > dashboard/public/api/sync-reports.json
